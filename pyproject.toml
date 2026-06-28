@@ -17,6 +17,7 @@ include = ["tests*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-n 4 --dist loadfile"
+log_level = "INFO"
 
 [tool.basedpyright]
 reportUnusedCallResult = false
