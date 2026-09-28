@@ -24,6 +24,26 @@
     version: "{{ osac_branch }}"
     force: true
 
+# The isolated Netris lab exposes its controller API through an HTTP NodePort.
+# Keep _netris_ctl_url as HTTP because the Netris API clients and the deployed
+# fulfillment jobs use that endpoint. The networking facade and the AAP values
+# it derives both validate controller URLs as HTTPS-only, so relax only those
+# Netris URL patterns in the cloned chart while retaining every other schema
+# validation rule.
+- name: Allow HTTP Netris controller URL in the isolated lab
+  ansible.builtin.replace:
+    path: "{{ osac_installer_dir }}/charts/osac/values.schema.json"
+    regexp: '(?s)("controllerUrl"\s*:\s*\{.*?"pattern"\s*:\s*"\^)(\$\|\^)?(https://)'
+    replace: '\1\2https?://'
+    validate: "python3 -m json.tool %s"
+
+- name: Allow HTTP derived Netris controller URL in the isolated lab
+  ansible.builtin.replace:
+    path: "{{ osac_installer_dir }}/charts/osac/values.schema.json"
+    regexp: '(?s)("NETRIS_CONTROLLER_URL"\s*:\s*\{\s*"type"\s*:\s*"string"\s*,\s*"pattern"\s*:\s*"\^\$\|\^)(https://)'
+    replace: '\1https?://'
+    validate: "python3 -m json.tool %s"
+
 - name: Determine values directory
   ansible.builtin.set_fact:
     _values_dir: "{{ osac_installer_dir }}/{{ osac_values_file | dirname }}"
@@ -126,28 +146,27 @@
       {{ {'cliImage': _ocp_cli_image.stdout | trim,
           'bundledPostgres': {'enabled': true},
           'lvms': {'enabled': true, 'channel': 'stable-' + ocp_version},
+          'global': {'networking': {'fabricManager': 'netris', 'k8sManager': '', 'netris': {
+              'controllerUrl': _netris_ctl_url,
+              'credentials': {'username': netris_username, 'externalSecret': true},
+              'siteId': _netris_site_id | string,
+              'tenantId': '1',
+              'tenantName': 'Admin',
+              'mgmtVpcId': _netris_mgmt_vpc_id | string,
+              'mgmtVpcName': ocp_vpc_name,
+              'resourceClassMap': _netris_resource_class_map | to_json
+            }}},
           'operator': {'aap': {'tokenSecret': {'name': 'osac-aap-api-token', 'key': 'token'}},
                        'controllers': {'networkingProvisioning': true}},
           'bmf': {'env': {'enableNetworkingProvisioning': 'true'}},
-          'networkClass': {'enabled': true, 'title': 'Netris', 'fabricManager': 'netris'},
           'aap': {'instanceGroups': {'clusterFulfillment': {'enabled': true, 'config': {
-              'NETWORK_CLASS': 'netris',
-              'NETWORK_STEPS_COLLECTION': 'netris.steps',
               'EXTERNAL_ACCESS_BASE_DOMAIN': ocp_base_domain,
               'EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS': ocp_base_domain,
               'EXTERNAL_ACCESS_API_INTERNAL_NETWORK': 'hypershift',
               'HOSTED_CLUSTER_BASE_DOMAIN': ocp_base_domain,
               'HOSTED_CLUSTER_CONTROLLER_AVAILABILITY_POLICY': 'SingleReplica',
               'HOSTED_CLUSTER_INFRASTRUCTURE_AVAILABILITY_POLICY': 'SingleReplica',
-              'NETRIS_CONTROLLER_URL': _netris_ctl_url,
-              'NETRIS_USERNAME': netris_username,
-              'NETRIS_SITE_ID': _netris_site_id | string,
-              'NETRIS_TENANT_ID': '1',
-              'NETRIS_TENANT_NAME': 'Admin',
-              'NETRIS_MGMT_VPC_ID': _netris_mgmt_vpc_id | string,
-              'NETRIS_MGMT_VPC_NAME': ocp_vpc_name,
               'NETRIS_BM_PROVISIONING_VNET': bmaas_provisioning_vnet_name,
-              'NETRIS_RESOURCE_CLASS_MAP': _netris_resource_class_map | to_json,
               'SERVER_MGMT_ROUTE_DESTINATION': '192.168.16.0/20',
               'SERVER_MGMT_ROUTE_GATEWAY': '192.168.16.1',
               'SERVER_SSH_BASTION_HOST': '192.168.16.254',
@@ -156,21 +175,13 @@
               'DNS_CLASS': 'dns.route53.dns',
               'DNS_ZONE': dns_hosted_zone
             }, 'secret': {
-              'NETRIS_PASSWORD': netris_password,
               'AWS_ACCESS_KEY_ID': aws_access_key_id,
               'AWS_SECRET_ACCESS_KEY': aws_secret_access_key,
               'SERVER_SSH_KEY': _ssh_private_key.content | b64decode,
               'SERVER_SSH_BASTION_KEY': _ssh_private_key.content | b64decode
             }},
             'networkFulfillment': {'enabled': true, 'config': {
-              'NETRIS_CONTROLLER_URL': _netris_ctl_url,
-              'NETRIS_USERNAME': netris_username,
-              'NETRIS_SITE_ID': _netris_site_id | string,
-              'NETRIS_TENANT_ID': '1',
-              'NETRIS_TENANT_NAME': 'Admin',
               'NETRIS_BM_PROVISIONING_VNET': bmaas_provisioning_vnet_name
-            }, 'secret': {
-              'NETRIS_PASSWORD': netris_password
             }}
           }},
           'clusterFulfillment': {'config': {
@@ -257,17 +268,7 @@
     enabled: true
     daemon_reload: true
 
-# --- BMF secrets (must exist before Helm install so BMF pod can mount them) ---
-
-- name: Ensure OSAC namespace exists for BMF secrets
-  when: bare_metal_services | bool
-  ansible.builtin.command:
-    cmd: oc create namespace {{ osac_namespace }}
-  environment:
-    KUBECONFIG: /root/.kube/config
-  register: _ns_create
-  failed_when: false
-  changed_when: _ns_create.rc == 0
+# --- Metal3 validation prerequisites ---
 
 - name: Ensure Provisioning CR exists for Metal3 validation
   when: bare_metal_services | bool
